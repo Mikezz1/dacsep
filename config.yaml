@@ -1,0 +1,23 @@
+exp_name: exp_poc_16khz_old_dl_add_sdr_7cb_lower_bs2
+
+num_epochs: 1000
+warmup_steps: 2000
+num_codebooks: 8
+
+add_si_sdr_loss: true
+add_si_sdr_loss_every_codebook: true
+
+variable_len_ref: true
+variable_len_train: true
+
+lr: 0.55e-3
+weight_decay: 0.00001
+
+
+train:
+  cut_len: 144000
+  batch_size: 96
+
+val:  
+  cut_len: 144000
+  batch_size: 192

@@ -1,0 +1,10 @@
+torch 
+torchaudio 
+transformers 
+librosa  
+torchmetrics 
+natsort 
+protobuf==3.20.1 
+tensorboard
+black
+pyyaml
