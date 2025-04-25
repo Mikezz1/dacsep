@@ -1,6 +1,7 @@
 import yaml  # pip install pyyaml
 from types import SimpleNamespace
 from pathlib import Path
+import math
 
 
 def _to_namespace(obj):
