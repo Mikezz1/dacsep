@@ -5,6 +5,7 @@ import math
 
 import torch
 
+
 USE_SPEAKER_EMBEDDER = False
 
 class TransformerEncoderLatent(nn.Module):
@@ -25,8 +26,8 @@ class TransformerEncoderLatent(nn.Module):
         self.quantizer = quantizer
         # self.quantizer.quantizer.semantic_residual_vector_quantizer.output_proj = None
         # self.quantizer.quantizer.acoustic_residual_vector_quantizer.output_proj = None
-        for p in self.quantizer.parameters():
-            p.requires_grad = False
+        # for p in self.quantizer.parameters():
+        #     p.requires_grad = False
 
         # for p in self.quantizer.quantizer.parameters():
         #     p.requires_grad = True
@@ -87,7 +88,7 @@ class TransformerEncoderLatent(nn.Module):
         logits = self.classification_head(encoded)  # [B, T, 2048]
         gate = self.gate(encoded)
 
-        out = F.gelu(logits*gate) * emb_current_
+        out =  F.gelu(logits*gate) * emb_current_
 
         return out.transpose(1,2)
 

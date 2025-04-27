@@ -87,7 +87,7 @@ def train_epoch(
     global O
 
     for batch in tqdm(loader):
-        optimizer.zero_grad()
+        
         noisy_audio = batch[0].to(device).unsqueeze(1)
         clean_audio = batch[1].to(device).unsqueeze(1)
         ref_audio = batch[2].to(device).unsqueeze(1)
@@ -107,7 +107,15 @@ def train_epoch(
                 speaker=ref_audio,
             )
             codes = model.quantizer.quantizer.encode(out, num_quantizers=8).transpose(0,1)
-            out_waveform = model.quantizer.decode(codes).audio_values.squeeze()
+
+            embeddings = out + (model.quantizer.quantizer.decode(codes) - out).detach()
+
+            embeddings = model.quantizer.upsample(embeddings)
+            decoder_outputs = model.quantizer.decoder_transformer(embeddings.transpose(1, 2))
+            embeddings = decoder_outputs[0].transpose(1, 2)
+            out_waveform = model.quantizer.decoder(embeddings).squeeze()#.audio_values.squeeze()
+            #out_waveform = model.quantizer.decode(codes).audio_values.squeeze()
+
             codes = model.quantizer.encode(clean_audio, num_quantizers=8).audio_codes
             reconstructed_target = model.quantizer.decode(codes).audio_values.squeeze()
 
@@ -119,27 +127,27 @@ def train_epoch(
                 O = True
 
             si_sdr_loss = -scale_invariant_signal_distortion_ratio(
-                out_waveform, reconstructed_target.squeeze()
+                out_waveform, clean_audio.squeeze()
             )
 
             # print(si_sdr_loss[0])
 
             si_sdr_loss = si_sdr_loss.mean()
+            si_sdr_loss.backward()
 
             writer.add_scalar(
                 f"Loss/train", si_sdr_loss.detach().cpu(), step
             )
             writer.add_scalar(f"LR/train", scheduler.get_lr()[-1], step)
 
-            total_loss += si_sdr_loss
-            si_sdr_loss.backward()
-            # for name, p in model.quantizer.quantizer.named_parameters():
+            total_loss += si_sdr_loss.detach().cpu()
+            # for name, p in model.encoder.named_parameters():
             #     if p.requires_grad:
             #         # print(name, p.shape, p.grad)
-            #         print(f"{name}: grad = {p.grad:.4g}")
-            # break
+            #         print(f"{name}: grad = {p.grad.norm():.4g}")
             optimizer.step()
             scheduler.step()
+            optimizer.zero_grad()
         step += 1
     return total_loss, step
 
