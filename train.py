@@ -1,6 +1,6 @@
 from codec_sep.trainer import *
 from codec_sep.data import LibrimixDataset
-from codec_sep.model import TransformerEncoderWithCodebookCondition
+from codec_sep.model import TransformerEncoderWithCodebookCondition, TransformerEncoderLatent
 from codec_sep.utils import _to_namespace, count_parameters, lr_lambda
 
 
@@ -29,7 +29,7 @@ from functools import partial
 
 
 if __name__ == "__main__":
-    device = torch.device("cuda")
+    device = torch.device("cuda:0")
 
     torch.backends.cudnn.benchmark = False
     # torch.set_float32_matmul_precision("medium")
@@ -42,29 +42,44 @@ if __name__ == "__main__":
     print(cfg)
 
     mimi_model = MimiModel.from_pretrained(
-        "kyutai/mimi", cache_dir="/mike_migrate2/hf_models"
+        "kyutai/mimi", cache_dir="/mike_migrate2/hf_models2"
     )
     mimi_model = mimi_model.to(device)
 
-    model = TransformerEncoderWithCodebookCondition(
+    model = TransformerEncoderLatent(
         quantizer=mimi_model,
         vocab_size=2048,
         embed_dim=256,
         num_heads=16,
         num_layers=16,
         hidden_dim=1024,
-        num_codebooks=cfg.num_codebooks,
-        use_speaker_embed=USE_SPEAKER_EMBEDDER,
     ).to(device)
 
     print('Model size: ', count_parameters(model) / 1e6)
 
     criterion = nn.CrossEntropyLoss()
+    trainable = (
+        p for n, p in model.named_parameters()
+        if p.requires_grad and not n.startswith("quantizer")
+    )
+
+    # for n, p in model.named_parameters():
+    #     if p.requires_grad and  n.startswith("quantizer"):
+    #         print(n)
+
     optimizer = torch.optim.AdamW(
-        (p for p in model.parameters() if p.requires_grad),
+        trainable,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
     )  # 2.2e-3
+
+    # for i, g in enumerate(optimizer.param_groups):
+    #     print(f"group {i}")
+    #     for p in g["params"]:
+    #         print("   ", p.shape, id(p))
+
+    # for name, p in model.named_parameters():
+    #     print(name, id(p), p.requires_grad)
 
     dataset = LibrimixDataset(
         data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/train-100/",
@@ -80,7 +95,7 @@ if __name__ == "__main__":
 
     # If each example in the dataset has the same length, the default collate will stack them
     loader = DataLoader(
-        dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=6
+        dataset, batch_size=cfg.train.batch_size, shuffle=True if not cfg.overfit else False, num_workers=6
     )
     val_loader = DataLoader(
         dataset_val, batch_size=cfg.val.batch_size, shuffle=False, num_workers=2

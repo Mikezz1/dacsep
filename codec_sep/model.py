@@ -1,10 +1,96 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 import torch
 
 USE_SPEAKER_EMBEDDER = False
+
+class TransformerEncoderLatent(nn.Module):
+
+    def __init__(
+        self,
+        quantizer,
+        vocab_size=2048,
+        embed_dim=256,
+        num_heads=8,
+        num_layers=6,
+        hidden_dim=2048,
+        num_codebooks=8,
+        use_speaker_embed=False,  # how many codebook heads
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.quantizer = quantizer
+        # self.quantizer.quantizer.semantic_residual_vector_quantizer.output_proj = None
+        # self.quantizer.quantizer.acoustic_residual_vector_quantizer.output_proj = None
+        for p in self.quantizer.parameters():
+            p.requires_grad = False
+
+        # for p in self.quantizer.quantizer.parameters():
+        #     p.requires_grad = True
+
+        self.ln = nn.LayerNorm(embed_dim)
+
+        # Positional encoding
+        self.pos_embedding = PositionalEncoding(embed_dim)
+
+        self.proj = nn.ModuleList(
+            [nn.Linear(512, embed_dim) for _ in range(3)]
+        )  # nn.Linear(512, embed_dim)
+
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_layers, dim_feedforward=hidden_dim, activation='gelu', batch_first=True, norm_first=True,)
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers
+        )
+
+        # Separate classification heads for each codebook
+        self.classification_head = nn.Sequential(nn.Linear(embed_dim, 512, bias=False), nn.GELU())
+        self.gate = nn.Sequential(nn.Linear(embed_dim, 512, bias=False), nn.Sigmoid())
+        # nn.init.normal_(self.classification_head.weight, 0, 0.1)
+
+
+    def forward(
+        self,
+        mix,
+        speaker,
+    ):
+    
+        speaker_emb = self.quantizer.encoder(speaker)
+        speaker_emb = self.quantizer.encoder_transformer(
+            speaker_emb.transpose(1, 2)
+        )[0].transpose(1, 2)
+        speaker_emb = self.quantizer.downsample(speaker_emb)
+        speaker_emb = self.proj[0](speaker_emb.transpose(1,2))
+
+
+        emb_current_ = self.quantizer.encoder(mix)
+        emb_current_ = self.quantizer.encoder_transformer(
+            emb_current_.transpose(1, 2)
+        )[0].transpose(1, 2)
+        emb_current_ = self.quantizer.downsample(emb_current_)
+        emb_current = self.proj[0](emb_current_.transpose(1,2))
+        emb_current_ = emb_current_.transpose(1,2)
+
+        emb_input = torch.cat(
+            [
+                self.pos_embedding(speaker_emb),
+                self.pos_embedding(emb_current),
+            ],
+            dim=1,
+        )
+
+
+        encoded = self.encoder(emb_input)[:, -emb_current.size(1) :]
+
+        logits = self.classification_head(encoded)  # [B, T, 2048]
+        gate = self.gate(encoded)
+
+        out = F.gelu(logits*gate) * emb_current_
+
+        return out.transpose(1,2)
+
 
 
 class FiLMWrapper(nn.Module):
