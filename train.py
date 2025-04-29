@@ -119,6 +119,12 @@ if __name__ == "__main__":
     os.makedirs(c_root, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
+    # model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/model_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
+    # scheduler.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/scheduler_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
+    # optimizer.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/optimizer_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
+
+
+
     train(
         loader,
         val_loader,

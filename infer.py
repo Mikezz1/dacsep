@@ -49,7 +49,7 @@ if __name__ == "__main__":
     mimi_model = mimi_model.to(device)
 
     dataset_val = LibrimixDataset(
-        data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/",
+        data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/train-100/",
         # manifest='/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/manifest.csv',
         cut_len=48_000
     )
@@ -71,7 +71,9 @@ if __name__ == "__main__":
     batch = next(iter(val_loader))
 
 
-    #model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_latent_mask_tanh_v0/model_20_ep_loss_-7.889787197113037.pt', weights_only=False).state_dict())
+    # model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_latent_mask_tanh_v0/model_20_ep_loss_-7.889787197113037.pt', weights_only=False).state_dict())
+    model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/model_160_ep_loss_-1.2059959173202515.pt', weights_only=False).state_dict())
+    
     model.eval()
 
     # audio, sr = torchaudio.load('/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/mix_clean/8842-304647-0012_3752-4943-0024.wav')
@@ -92,8 +94,10 @@ if __name__ == "__main__":
             mix=audio,
             speaker=ref,
         )
-        codes = model.quantizer.quantizer.encode(out, num_quantizers=8).transpose(0,1)
-        out_waveform = model.quantizer.decode(codes).audio_values.squeeze()
+        out = model.quantizer.upsample(out)
+        decoder_outputs = model.quantizer.decoder_transformer(out.transpose(1, 2))
+        out = decoder_outputs[0].transpose(1, 2)
+        out_waveform = model.quantizer.decoder(out).squeeze()#.audio_values.squeeze()
 
 
         codes = model.quantizer.encode(gt, num_quantizers=8).audio_codes

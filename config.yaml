@@ -1,17 +1,21 @@
-exp_name: exp_poc_latent_mask_tanh_v1
+exp_name: exp_poc_mask_after_rvq_v7 #exp_poc_latent_mask_tanh_v1
 overfit: true
+
 
 num_epochs: 1000
 warmup_steps: 2000
 num_codebooks: 8
 
-add_si_sdr_loss: true
-add_si_sdr_loss_every_codebook: true
+# add_si_sdr_loss: true
+# add_si_sdr_loss_every_codebook: true
+add_latent_loss: false
+
+after_quant: true
 
 variable_len_ref: false
 variable_len_train: false
 
-lr: 0.55e-3
+lr: 1.0e-4
 weight_decay: 0.00001
 
 

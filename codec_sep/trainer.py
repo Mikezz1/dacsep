@@ -15,6 +15,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import math
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 
 from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
 
@@ -40,12 +41,17 @@ def eval_epoch(
 
         with torch.no_grad():
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                if cfg.after_quant:
                 out = model(
                     mix=noisy_audio,
-                    speaker=clean_audio,
+                    speaker=ref_audio,
                 )
-                codes = model.quantizer.quantizer.encode(out, num_quantizers=8).transpose(0,1)
-                out_waveform = model.quantizer.decode(codes).audio_values.squeeze()
+                out_waveform = model.decode_latent(out)
+                # out = model.quantizer.upsample(out)
+                # decoder_outputs = model.quantizer.decoder_transformer(out.transpose(1, 2))
+                # out = decoder_outputs[0].transpose(1, 2)
+                
+                # out_waveform = model.quantizer.decoder(out).squeeze()#.audio_values.squeeze()
                 codes = model.quantizer.encode(clean_audio, num_quantizers=8).audio_codes
                 reconstructed_target = model.quantizer.decode(codes).audio_values.squeeze()
 
@@ -102,37 +108,43 @@ def train_epoch(
             ref_audio = ref_audio[:, :max_len_ref]
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            out = model(
+            _out = model(
                 mix=noisy_audio,
                 speaker=ref_audio,
             )
-            codes = model.quantizer.quantizer.encode(out, num_quantizers=8).transpose(0,1)
-
-            embeddings = out + (model.quantizer.quantizer.decode(codes) - out).detach()
-
-            embeddings = model.quantizer.upsample(embeddings)
-            decoder_outputs = model.quantizer.decoder_transformer(embeddings.transpose(1, 2))
-            embeddings = decoder_outputs[0].transpose(1, 2)
-            out_waveform = model.quantizer.decoder(embeddings).squeeze()#.audio_values.squeeze()
+            out_waveform = model.decode_latent(_out)
             #out_waveform = model.quantizer.decode(codes).audio_values.squeeze()
 
             codes = model.quantizer.encode(clean_audio, num_quantizers=8).audio_codes
             reconstructed_target = model.quantizer.decode(codes).audio_values.squeeze()
 
-            if not O:
-                # print(out_waveform.float().cpu().detach().shape)
-                torchaudio.save('sample.wav', out_waveform[0].float().cpu().detach().unsqueeze(0), sample_rate=24000)
-                torchaudio.save('sample_rec.wav', reconstructed_target[0].float().cpu().detach().unsqueeze(0), sample_rate=24000)
-                torchaudio.save('sample_tgt.wav', clean_audio[0].cpu().float(), sample_rate=24000)
-                O = True
+            # if not O:
+            #     # print(out_waveform.float().cpu().detach().shape)
+            #     torchaudio.save('sample.wav', out_waveform[0].float().cpu().detach().unsqueeze(0), sample_rate=24000)
+            #     torchaudio.save('sample_rec.wav', reconstructed_target[0].float().cpu().detach().unsqueeze(0), sample_rate=24000)
+            #     torchaudio.save('sample_tgt.wav', clean_audio[0].cpu().float(), sample_rate=24000)
+            #     O = True
 
             si_sdr_loss = -scale_invariant_signal_distortion_ratio(
                 out_waveform, clean_audio.squeeze()
             )
 
+            latent_loss = 0
+            if cfg.add_latent_loss:
+                latent_loss = F.l1_loss(_out.transpose(1,2), model.get_latent(clean_audio)).mean()
+
             # print(si_sdr_loss[0])
 
-            si_sdr_loss = si_sdr_loss.mean()
+            writer.add_scalar(
+                f"Loss/train", si_sdr_loss.mean().detach().cpu(), step
+            )
+
+            if cfg.add_latent_loss:
+                writer.add_scalar(
+                    f"latent_loss/train", latent_loss.detach().cpu(), step
+                )
+
+            si_sdr_loss = si_sdr_loss.mean() + latent_loss
             si_sdr_loss.backward()
 
             writer.add_scalar(
@@ -202,7 +214,7 @@ def train(
             )
             writer.add_scalar(f"SDR/val_epoch", val_sdr, epoch)
             writer.add_scalar(f"SDR_PSEUDO/val_epoch", val_sdr_pseudo, epoch)
-        if (epoch % 20 == 0) and not cfg.overfit:
+        if (epoch % 60 == 0) and not cfg.overfit:
             torch.save(
                 model,
                 os.path.join(
