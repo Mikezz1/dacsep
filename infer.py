@@ -29,6 +29,9 @@ from functools import partial
 
 from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
 
+import dac
+
+DAC = True
 
 if __name__ == "__main__":
     device = torch.device("cuda:0")
@@ -43,13 +46,18 @@ if __name__ == "__main__":
     cfg = _to_namespace(cfg_dict)
     print(cfg)
 
-    mimi_model = MimiModel.from_pretrained(
-        "kyutai/mimi", cache_dir="/mike_migrate2/hf_models2"
-    )
-    mimi_model = mimi_model.to(device)
+    if DAC:
+        model_path = dac.utils.download(model_type="24khz")
+        quantizer = dac.DAC.load(model_path)
+
+    else:
+        quantizer = MimiModel.from_pretrained(
+            "kyutai/mimi", cache_dir="/mike_migrate2/hf_models2"
+        )
+        quantizer = mimi_model.to(device)
 
     dataset_val = LibrimixDataset(
-        data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/train-100/",
+        data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/",
         # manifest='/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/manifest.csv',
         cut_len=48_000
     )
@@ -60,19 +68,22 @@ if __name__ == "__main__":
 
 
     model = TransformerEncoderLatent(
-        quantizer=mimi_model,
+        quantizer=quantizer,
         vocab_size=2048,
         embed_dim=256,
         num_heads=16,
         num_layers=16,
         hidden_dim=1024,
+        after_quant=False,
+        descript=True,
+
     ).to(device)
 
     batch = next(iter(val_loader))
 
 
     # model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_latent_mask_tanh_v0/model_20_ep_loss_-7.889787197113037.pt', weights_only=False).state_dict())
-    model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/model_160_ep_loss_-1.2059959173202515.pt', weights_only=False).state_dict())
+    model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_pseudoSDR_snake_high_lr_v3/model_180_ep_loss_-3.8640267848968506.pt', weights_only=False).state_dict())
     
     model.eval()
 
@@ -90,27 +101,45 @@ if __name__ == "__main__":
     
     with torch.inference_mode():
 
-        out = model(
-            mix=audio,
-            speaker=ref,
-        )
-        out = model.quantizer.upsample(out)
-        decoder_outputs = model.quantizer.decoder_transformer(out.transpose(1, 2))
-        out = decoder_outputs[0].transpose(1, 2)
-        out_waveform = model.quantizer.decoder(out).squeeze()#.audio_values.squeeze()
+        if DAC:
+            _out = model(
+                    mix=audio,
+                    speaker=ref,
+                )
+            out_waveform = model.descript_decode(_out).unsqueeze(0)
+            if out_waveform.size(1) != audio.size(1):
+                out_waveform = F.pad(out_waveform, (0, audio.size(2) - out_waveform.size(1)))
 
 
-        codes = model.quantizer.encode(gt, num_quantizers=8).audio_codes
-        reconstructed_target = model.quantizer.decode(codes).audio_values.squeeze()
+            x = model.quantizer.preprocess(gt, 24000)
+            z, _, _, _, _ = model.quantizer.encode(x,n_quantizers=8)
+            reconstructed_target = model.quantizer.decode(z).squeeze().unsqueeze(0)
+            if reconstructed_target.size(1) != gt.size(2):
+                reconstructed_target = F.pad(reconstructed_target, (0, gt.size(2) - reconstructed_target.size(1)))
+        else:
+            out = model(
+                mix=audio,
+                speaker=ref,
+            )
+            out = model.quantizer.upsample(out)
+            decoder_outputs = model.quantizer.decoder_transformer(out.transpose(1, 2))
+            out = decoder_outputs[0].transpose(1, 2)
+            out_waveform = model.quantizer.decoder(out).squeeze()#.audio_values.squeeze()
+
+
+            codes = model.quantizer.encode(gt, num_quantizers=8).audio_codes
+            reconstructed_target = model.quantizer.decode(codes).audio_values.squeeze()
 
 
     print(scale_invariant_signal_distortion_ratio(out_waveform.squeeze(), gt.squeeze()))
     print(scale_invariant_signal_distortion_ratio(out_waveform.squeeze(), reconstructed_target.squeeze()))
 
-    torchaudio.save('out_waveform.wav', out_waveform.unsqueeze(0).cpu().detach(), sample_rate=24000)
+    torchaudio.save('mix.wav', audio.squeeze(0).cpu().detach(), sample_rate=24000)
+
+    torchaudio.save('out_waveform.wav', out_waveform.cpu().detach(), sample_rate=24000)
     torchaudio.save('gt_waveform.wav', gt.squeeze(0).cpu().detach(), sample_rate=24000)
     torchaudio.save('ref_waveform.wav', ref.squeeze(0).cpu().detach(), sample_rate=24000)
-    torchaudio.save('reconstructed_target_waveform.wav', reconstructed_target.unsqueeze(0).cpu().detach(), sample_rate=24000)
+    torchaudio.save('reconstructed_target_waveform.wav', reconstructed_target.cpu().detach(), sample_rate=24000)
 
 
 

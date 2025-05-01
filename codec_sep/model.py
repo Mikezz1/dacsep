@@ -11,7 +11,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from torch.nn.utils import weight_norm
+from transformers.models.mimi.modeling_mimi import MimiVectorQuantization
 
+import copy
+import torch.nn as nn
+
+class CrossTransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward, activation="relu", batch_first=True, norm_first=True):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, batch_first=batch_first)
+        self.cross_attn = nn.MultiheadAttention(d_model, nhead, batch_first=batch_first)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm_first = norm_first
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(0.1)
+        self.act = {"relu": nn.ReLU(), "gelu": nn.GELU(), "snake":Snake1d(dim_feedforward)}[activation]
+
+    def _sa(self, x, mask, pad):
+        x, _ = self.self_attn(x, x, x, attn_mask=mask, key_padding_mask=pad)
+        return self.dropout(x)
+
+    def _ca(self, x, m, mask, pad):
+        x, _ = self.cross_attn(x, m, m, attn_mask=mask, key_padding_mask=pad)
+        return self.dropout(x)
+
+    def _ff(self, x):
+        x = self.linear2(self.dropout(self.act(self.linear1(x))))
+        return self.dropout(x)
+
+    def forward(self, x, mem=None, src_mask=None, src_pad=None, mem_mask=None, mem_pad=None):
+        if self.norm_first:
+            x = x + self._sa(self.norm1(x), src_mask, src_pad)
+            if mem is not None:
+                x = x + self._ca(self.norm2(x), mem, mem_mask, mem_pad)
+            x = x + self._ff(self.norm3(x))
+        else:
+            y = self.norm1(x + self._sa(x, src_mask, src_pad))
+            if mem is not None:
+                y = self.norm2(y + self._ca(y, mem, mem_mask, mem_pad))
+            x = self.norm3(y + self._ff(y))
+        return x
+
+
+class CrossTransformerEncoder(nn.Module):
+    def __init__(self, layer, num_layers):
+        super().__init__()
+        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
+
+    def forward(self, x, mem=None, mask=None, src_pad=None, mem_mask=None, mem_pad=None):
+        for l in self.layers:
+            x = l(x, mem, mask, src_pad, mem_mask, mem_pad)
+        return x
 
 
 # Scripting this brings model speed up 1.4x
@@ -46,18 +99,28 @@ class TransformerEncoderLatent(nn.Module):
         hidden_dim=2048,
         num_codebooks=8,
         use_speaker_embed=False,  # how many codebook heads
+        after_quant=False,
+        descript=False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.quantizer = quantizer
+
+        hidden_size = 512 if not descript else 1024
         # self.quantizer.quantizer.semantic_residual_vector_quantizer.output_proj = None
         # self.quantizer.quantizer.acoustic_residual_vector_quantizer.output_proj = None
-        # for p in self.quantizer.parameters():
-        #     p.requires_grad = False
-
         # for p in self.quantizer.quantizer.parameters():
         #     p.requires_grad = True
 
+        for p in self.quantizer.parameters():
+            p.requires_grad = False
+
+        # for p in self.quantizer.quantizer.parameters():
+        #     p.requires_grad = True
+        self.after_quant = after_quant
+
+
+        self.descript = descript
         
 
         self.ln = nn.LayerNorm(embed_dim)
@@ -66,22 +129,26 @@ class TransformerEncoderLatent(nn.Module):
         self.pos_embedding = PositionalEncoding(embed_dim)
 
         self.proj = nn.ModuleList(
-            [nn.Linear(512, embed_dim) for _ in range(3)]
+            [nn.Linear(hidden_size, embed_dim) for _ in range(3)]
         )  # nn.Linear(512, embed_dim)
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_layers, dim_feedforward=hidden_dim, activation='gelu', batch_first=True, norm_first=True,)
+        s0 = Snake1d(hidden_dim)
+
+        self.s1 = Snake1d(hidden_size)
+        self.s2 = Snake1d(hidden_size)
+        #'gelu'
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_layers, dim_feedforward=hidden_dim, activation=s0, batch_first=True, norm_first=True,)
         self.encoder = nn.TransformerEncoder(
             encoder_layer, num_layers=num_layers
         )
 
-        # self.s1 = Snake1d(512)
-        # self.s2 = Snake1d(512)
+        self.ch_up = nn.Linear(embed_dim, hidden_size)
 
         # Separate classification heads for each codebook
-        self.masker = nn.Linear(embed_dim, 512, bias=False)
-        self.gate = nn.Sequential(nn.Linear(512, 512, bias=False), nn.Sigmoid())
-        self.output = nn.Sequential(nn.Linear(512, 512, bias=False), nn.GELU())
-        self.activation = nn.ReLU() #nn.Tanh()
+        self.masker = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.gate = nn.Sequential(nn.Linear(hidden_size, hidden_size, bias=False), nn.Sigmoid())
+        self.output = nn.Sequential(nn.Linear(hidden_size, hidden_size, bias=False), self.s1) #nn.GELU()
+        self.activation = self.s2 #nn.ReLU() #nn.Tanh()
 
         # nn.init.normal_(self.classification_head.weight, 0, 0.1)
 
@@ -94,15 +161,19 @@ class TransformerEncoderLatent(nn.Module):
             x.transpose(1, 2)
         )[0].transpose(1, 2)
         x = self.quantizer.downsample(x)
-        return x
+        return x.transpose(1,2)
 
     def quantize_and_decode(self, x):
         """
         only for after_quant: false
         """
-        x = self.quantizer.quantizer.encode(x)
-        x = self.quantizer.decode(x)
-        return x
+        feat = self.quantizer.quantizer.encode(x, num_quantizers=8).transpose(0,1)
+        feat = self.quantizer.quantizer.decode(feat)
+        # feat.grad = x.grad
+        # feat = x + (self.quantizer.quantizer.decode(feat) - x).detach()
+        x = self.decode_latent(feat)
+        # x = self.quantizer.decode(x).audio_values.squeeze()
+        return x 
 
     def get_latent(self, x):
         """
@@ -122,6 +193,17 @@ class TransformerEncoderLatent(nn.Module):
         x = self.quantizer.decoder(x).squeeze()
         return x
 
+    @torch.compile()
+    def descript_encode(self, x):
+        x = self.quantizer.preprocess(x, 24000)
+        z, codes, latents, _, _ = self.quantizer.encode(x, n_quantizers=8)
+        return z
+    
+    @torch.compile()
+    def descript_decode(self, x):
+        return self.quantizer.decode(x).squeeze()
+
+    @torch.compile()
     def forward(
         self,
         mix,
@@ -134,9 +216,6 @@ class TransformerEncoderLatent(nn.Module):
         # emb_current_ = self.quantizer.upsample(emb_current_)
         # decoder_outputs = self.quantizer.decoder_transformer(emb_current_.transpose(1, 2))
         # emb_current = decoder_outputs[0]
-        emb_current_ = self.get_latent(mix)
-        emb_current = self.proj[0](emb_current_)
-
         # codes = self.quantizer.encode(speaker).audio_codes
         # speaker = self.quantizer.quantizer.decode(codes)
 
@@ -145,9 +224,7 @@ class TransformerEncoderLatent(nn.Module):
         # speaker = decoder_outputs[0]
         # speaker_emb = self.proj[0](speaker.transpose(1, 2))
 
-        speaker_emb = self.proj[0](self.get_latent(speaker))
-
-    
+            
         # speaker_emb = self.quantizer.encoder(speaker)
         # speaker_emb = self.quantizer.encoder_transformer(
         #     speaker_emb.transpose(1, 2)
@@ -164,6 +241,24 @@ class TransformerEncoderLatent(nn.Module):
         # emb_current = self.proj[0](emb_current_.transpose(1,2))
         # emb_current_ = emb_current_.transpose(1,2)
 
+
+        if self.descript:
+            emb_current_ = self.descript_encode(mix).transpose(1,2)
+            # print(emb_current_.shape)
+            emb_current = self.proj[0](emb_current_)
+            speaker_emb = self.proj[0](self.descript_encode(speaker).transpose(1,2))
+
+        else:
+            if self.after_quant:
+                emb_current_ = self.get_latent(mix)
+                emb_current = self.proj[0](emb_current_)
+                speaker_emb = self.proj[0](self.get_latent(speaker))
+            else:
+                emb_current_ = self.get_latent_pre_quant(mix)
+                emb_current = self.proj[0](emb_current_)
+                speaker_emb = self.proj[0](self.get_latent_pre_quant(speaker))
+
+
         emb_input = torch.cat(
             [
                 self.pos_embedding(speaker_emb),
@@ -173,6 +268,8 @@ class TransformerEncoderLatent(nn.Module):
         )
 
         encoded = self.encoder(emb_input)[:, -emb_current.size(1) :]
+
+        encoded = self.ch_up(encoded)
 
         mask = self.masker(encoded)  # [B, T, 2048]
 

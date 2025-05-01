@@ -18,7 +18,7 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 from pathlib import Path
-
+import shutil
 import os
 
 from torch.optim.lr_scheduler import LambdaLR
@@ -27,11 +27,13 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
 from functools import partial
 
+import dac
+
 
 if __name__ == "__main__":
     device = torch.device("cuda:0")
 
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
     # torch.set_float32_matmul_precision("medium")
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -41,19 +43,32 @@ if __name__ == "__main__":
     cfg = _to_namespace(cfg_dict)
     print(cfg)
 
-    mimi_model = MimiModel.from_pretrained(
-        "kyutai/mimi", cache_dir="/mike_migrate2/hf_models2"
-    )
-    mimi_model = mimi_model.to(device)
+    if not cfg.use_descript:
+
+        quantizer = MimiModel.from_pretrained(
+            "kyutai/mimi", cache_dir="/mike_migrate2/hf_models2"
+        )
+        quantizer = quantizer.to(device)
+    
+    else:
+        model_path = dac.utils.download(model_type="24khz")
+        quantizer = dac.DAC.load(model_path)
 
     model = TransformerEncoderLatent(
-        quantizer=mimi_model,
+        quantizer=quantizer,
         vocab_size=2048,
         embed_dim=256,
         num_heads=16,
         num_layers=16,
         hidden_dim=1024,
+        after_quant=cfg.after_quant,
+        descript=cfg.use_descript,
     ).to(device)
+
+    # model.quantizer = add_ste(model.quantizer) 
+
+    # for p in model.quantizer.parameters():
+    #     p.requires_grad = True
 
     print('Model size: ', count_parameters(model) / 1e6)
 
@@ -95,7 +110,7 @@ if __name__ == "__main__":
 
     # If each example in the dataset has the same length, the default collate will stack them
     loader = DataLoader(
-        dataset, batch_size=cfg.train.batch_size, shuffle=True if not cfg.overfit else False, num_workers=6
+        dataset, batch_size=cfg.train.batch_size, shuffle=True if not cfg.overfit else False, num_workers=8, persistent_workers=True
     )
     val_loader = DataLoader(
         dataset_val, batch_size=cfg.val.batch_size, shuffle=False, num_workers=2
@@ -118,6 +133,7 @@ if __name__ == "__main__":
     )
     os.makedirs(c_root, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
+    shutil.copyfile('/mike_migrate2/codec-source-sep/config.yaml', os.path.join(log_dir, 'config.yaml'))
 
     # model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/model_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
     # scheduler.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/scheduler_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())

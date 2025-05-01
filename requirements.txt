@@ -4,7 +4,11 @@ transformers
 librosa  
 torchmetrics 
 natsort 
-protobuf==3.20.1 
+# protobuf==3.20.1
 tensorboard
 black
 pyyaml
+descript-audio-codec
+librosa
+onnxruntime-gpu
+requests
