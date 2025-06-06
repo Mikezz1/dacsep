@@ -26,7 +26,6 @@ def si_sdr(pred, target, eps=1e-8):
     return -10 * torch.log10(ratio + eps)  # negate → minimise
 
 
-
 def lr_lambda(current_step, warmup_steps, total_training_steps):
     if current_step < warmup_steps:
         # Linear warmup from 0 -> 1
@@ -40,3 +39,42 @@ def lr_lambda(current_step, warmup_steps, total_training_steps):
             1 + math.cos(math.pi + math.pi * (remaining_steps / decay_steps))
         )
         return max(cosine_decay, 0)
+
+
+def librimix_collate(batch, sr: int = 24_000):
+    """
+    * mix  – 2 s / 3 s / 4 s  (picked once per batch, uniform)
+    * ref  – 2 … 8 s          (picked once per batch, uniform)
+    Everything is trimmed or 0-padded so tensors stack cleanly.
+    """
+    mix_sec = random.choice((2, 3, 4))
+    ref_sec = random.choice((2, 3, 4, 5, 6, 7, 8))
+    mix_len = mix_sec * sr
+    ref_len = ref_sec * sr
+
+    mix_b, tgt_b, ref_b, orig_lens, spk_ids = [], [], [], [], []
+
+    for mix, tgt, ref, orig_len, spk in batch:
+
+        if mix.size(-1) < mix_len:
+            pad = mix_len - mix.size(-1)
+            mix = F.pad(mix, (0, pad))
+            tgt = F.pad(tgt, (0, pad))
+        mix_b.append(mix[..., :mix_len])
+        tgt_b.append(tgt[..., :mix_len])
+
+        if ref.size(-1) < ref_len:
+            pad = ref_len - ref.size(-1)
+            ref = F.pad(ref, (0, pad))
+        ref_b.append(ref[..., :ref_len])
+
+        orig_lens.append(min(orig_len, mix_len))
+        spk_ids.append(spk)
+
+    return (
+        torch.stack(mix_b),
+        torch.stack(tgt_b),
+        torch.stack(ref_b),
+        torch.tensor(orig_lens),
+        torch.tensor(spk_ids),
+    )

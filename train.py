@@ -1,7 +1,10 @@
 from codec_sep.trainer import *
 from codec_sep.data import LibrimixDataset
-from codec_sep.model import TransformerEncoderWithCodebookCondition, TransformerEncoderLatent
-from codec_sep.utils import _to_namespace, count_parameters, lr_lambda
+from codec_sep.model import (
+    TransformerEncoderWithCodebookCondition,
+    TransformerEncoderLatent,
+)
+from codec_sep.utils import _to_namespace, count_parameters, lr_lambda, librimix_collate
 
 
 import torch
@@ -12,7 +15,6 @@ from transformers import MimiModel, AutoFeatureExtractor
 
 import torchaudio
 import yaml  # pip install pyyaml
-from types import SimpleNamespace
 from pathlib import Path
 
 from tqdm import tqdm
@@ -22,55 +24,12 @@ import shutil
 import os
 
 from torch.optim.lr_scheduler import LambdaLR
-import math
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
 from functools import partial
 
 import dac
 
-import random
-
-
-def librimix_collate(batch, sr: int = 24_000):
-    """
-    * mix  – 2 s / 3 s / 4 s  (picked once per batch, uniform)
-    * ref  – 2 … 8 s          (picked once per batch, uniform)
-    Everything is trimmed or 0-padded so tensors stack cleanly.
-    """
-    mix_sec = random.choice((2, 3, 4))
-    ref_sec = random.choice((2, 3, 4, 5, 6, 7, 8))
-    mix_len = mix_sec * sr
-    ref_len = ref_sec * sr
-
-    mix_b, tgt_b, ref_b, orig_lens, spk_ids = [], [], [], [], []
-
-    for mix, tgt, ref, orig_len, spk in batch:
-        
-        if mix.size(-1) < mix_len:
-            pad = mix_len - mix.size(-1)
-            mix = F.pad(mix, (0, pad))
-            tgt = F.pad(tgt, (0, pad))
-        mix_b.append(mix[..., :mix_len])
-        tgt_b.append(tgt[..., :mix_len])
-
-
-        if ref.size(-1) < ref_len:
-            pad = ref_len - ref.size(-1)
-            ref = F.pad(ref, (0, pad))
-        ref_b.append(ref[..., :ref_len])
-
-        
-        orig_lens.append(min(orig_len, mix_len))
-        spk_ids.append(spk)
-
-    return (
-        torch.stack(mix_b),  
-        torch.stack(tgt_b),   
-        torch.stack(ref_b), 
-        torch.tensor(orig_lens),  
-        torch.tensor(spk_ids),  
-    )
 
 
 if __name__ == "__main__":
@@ -92,9 +51,11 @@ if __name__ == "__main__":
             "kyutai/mimi", cache_dir="/mike_migrate2/hf_models2"
         )
         quantizer = quantizer.to(device)
-    
+
     else:
-        model_path = dac.utils.download(model_type="24khz" if cfg.sample_rate == 24000 else "16khz")
+        model_path = dac.utils.download(
+            model_type="24khz" if cfg.sample_rate == 24000 else "16khz"
+        )
         quantizer = dac.DAC.load(model_path)
         print(quantizer)
 
@@ -112,36 +73,20 @@ if __name__ == "__main__":
         sample_rate=cfg.sample_rate,
     ).to(device)
 
-    # model.quantizer = add_ste(model.quantizer) 
-
-    # for p in model.quantizer.parameters():
-    #     p.requires_grad = True
-
-    print('Model size: ', count_parameters(model) / 1e6)
+    print("Model size: ", count_parameters(model) / 1e6)
 
     criterion = nn.CrossEntropyLoss()
     trainable = (
-        p for n, p in model.named_parameters()
+        p
+        for n, p in model.named_parameters()
         if p.requires_grad and not n.startswith("quantizer")
     )
-
-    # for n, p in model.named_parameters():
-    #     if p.requires_grad and  n.startswith("quantizer"):
-    #         print(n)
 
     optimizer = torch.optim.AdamW(
         trainable,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
     )  # 2.2e-3
-
-    # for i, g in enumerate(optimizer.param_groups):
-    #     print(f"group {i}")
-    #     for p in g["params"]:
-    #         print("   ", p.shape, id(p))
-
-    # for name, p in model.named_parameters():
-    #     print(name, id(p), p.requires_grad)
 
     dataset = LibrimixDataset(
         data_dir="/mike_migrate2/data/Libri2Mix/wav8k/min/train-100/",
@@ -157,7 +102,6 @@ if __name__ == "__main__":
         cut_len=cfg.val.cut_len,
         sample_rate_tgt=cfg.sample_rate,
     )
-
 
     loader = DataLoader(
         dataset,
@@ -184,18 +128,22 @@ if __name__ == "__main__":
     )
 
     c_root = os.path.join("/mike_migrate2/checkpoints/2025_04_22/", cfg.exp_name)
-    log_dir = (
-        os.path.join("/mike_migrate2/logs/2025_04_22/", cfg.exp_name)
-    )
+    log_dir = os.path.join("/mike_migrate2/logs/2025_04_22/", cfg.exp_name)
     os.makedirs(c_root, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
-    shutil.copyfile('/mike_migrate2/codec-source-sep/config.yaml', os.path.join(log_dir, 'config.yaml'))
+    shutil.copyfile(
+        "/mike_migrate2/codec-source-sep/config.yaml",
+        os.path.join(log_dir, "config.yaml"),
+    )
 
-    model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_v50/model.pt', weights_only=False).state_dict())
+    model.load_state_dict(
+        torch.load(
+            "/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_v50/model.pt",
+            weights_only=False,
+        ).state_dict()
+    )
     # scheduler.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_pseudoSDR_snake_high_lr_snake_film_24khz_v44/scheduler.pt', weights_only=False).state_dict())
-    #optimizer.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_v50/optimizer.pt', weights_only=False).state_dict())
-
-
+    # optimizer.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_v50/optimizer.pt', weights_only=False).state_dict())
 
     train(
         loader,
