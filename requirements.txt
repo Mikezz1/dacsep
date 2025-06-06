@@ -12,3 +12,4 @@ descript-audio-codec
 librosa
 onnxruntime-gpu
 requests
+rotary-embedding-torch

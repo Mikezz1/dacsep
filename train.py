@@ -29,12 +29,55 @@ from functools import partial
 
 import dac
 
+import random
+
+
+def librimix_collate(batch, sr: int = 24_000):
+    """
+    * mix  – 2 s / 3 s / 4 s  (picked once per batch, uniform)
+    * ref  – 2 … 8 s          (picked once per batch, uniform)
+    Everything is trimmed or 0-padded so tensors stack cleanly.
+    """
+    mix_sec = random.choice((2, 3, 4))
+    ref_sec = random.choice((2, 3, 4, 5, 6, 7, 8))
+    mix_len = mix_sec * sr
+    ref_len = ref_sec * sr
+
+    mix_b, tgt_b, ref_b, orig_lens, spk_ids = [], [], [], [], []
+
+    for mix, tgt, ref, orig_len, spk in batch:
+        
+        if mix.size(-1) < mix_len:
+            pad = mix_len - mix.size(-1)
+            mix = F.pad(mix, (0, pad))
+            tgt = F.pad(tgt, (0, pad))
+        mix_b.append(mix[..., :mix_len])
+        tgt_b.append(tgt[..., :mix_len])
+
+
+        if ref.size(-1) < ref_len:
+            pad = ref_len - ref.size(-1)
+            ref = F.pad(ref, (0, pad))
+        ref_b.append(ref[..., :ref_len])
+
+        
+        orig_lens.append(min(orig_len, mix_len))
+        spk_ids.append(spk)
+
+    return (
+        torch.stack(mix_b),  
+        torch.stack(tgt_b),   
+        torch.stack(ref_b), 
+        torch.tensor(orig_lens),  
+        torch.tensor(spk_ids),  
+    )
+
 
 if __name__ == "__main__":
-    device = torch.device("cuda:0")
+    device = torch.device("cuda")
 
     torch.backends.cudnn.benchmark = True
-    # torch.set_float32_matmul_precision("medium")
+    torch.set_float32_matmul_precision("medium")
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cuda.enable_mem_efficient_sdp(False)
     torch.backends.cuda.enable_math_sdp(False)
@@ -51,18 +94,22 @@ if __name__ == "__main__":
         quantizer = quantizer.to(device)
     
     else:
-        model_path = dac.utils.download(model_type="24khz")
+        model_path = dac.utils.download(model_type="24khz" if cfg.sample_rate == 24000 else "16khz")
         quantizer = dac.DAC.load(model_path)
+        print(quantizer)
 
     model = TransformerEncoderLatent(
         quantizer=quantizer,
         vocab_size=2048,
         embed_dim=256,
-        num_heads=16,
+        num_heads=8,
         num_layers=16,
         hidden_dim=1024,
         after_quant=cfg.after_quant,
         descript=cfg.use_descript,
+        twin_tower=cfg.twin_tower,
+        film=cfg.film,
+        sample_rate=cfg.sample_rate,
     ).to(device)
 
     # model.quantizer = add_ste(model.quantizer) 
@@ -97,20 +144,29 @@ if __name__ == "__main__":
     #     print(name, id(p), p.requires_grad)
 
     dataset = LibrimixDataset(
-        data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/train-100/",
+        data_dir="/mike_migrate2/data/Libri2Mix/wav8k/min/train-100/",
         # manifest='/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/train-100/manifest.csv',
         cut_len=cfg.train.cut_len,
+        sample_rate_tgt=cfg.sample_rate,
+        return_second_speaker_no_mix=cfg.dynamic_mixing,
     )
 
     dataset_val = LibrimixDataset(
-        data_dir="/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/",
+        data_dir="/mike_migrate2/data/Libri2Mix/wav8k/min/test/",
         # manifest='/mike_migrate2/data_16khz/Libri2Mix/wav16k/min/dev/manifest.csv',
         cut_len=cfg.val.cut_len,
+        sample_rate_tgt=cfg.sample_rate,
     )
 
-    # If each example in the dataset has the same length, the default collate will stack them
+
     loader = DataLoader(
-        dataset, batch_size=cfg.train.batch_size, shuffle=True if not cfg.overfit else False, num_workers=8, persistent_workers=True
+        dataset,
+        batch_size=cfg.train.batch_size,
+        shuffle=not cfg.overfit,
+        num_workers=8,
+        prefetch_factor=2,
+        persistent_workers=True,
+        # collate_fn=partial(librimix_collate, sr=cfg.sample_rate),
     )
     val_loader = DataLoader(
         dataset_val, batch_size=cfg.val.batch_size, shuffle=False, num_workers=2
@@ -135,9 +191,9 @@ if __name__ == "__main__":
     os.makedirs(log_dir, exist_ok=True)
     shutil.copyfile('/mike_migrate2/codec-source-sep/config.yaml', os.path.join(log_dir, 'config.yaml'))
 
-    # model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/model_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
-    # scheduler.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/scheduler_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
-    # optimizer.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_mask_after_rvq_v2/optimizer_280_ep_loss_-1.7033835649490356.pt', weights_only=False).state_dict())
+    model.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_v50/model.pt', weights_only=False).state_dict())
+    # scheduler.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_pseudoSDR_snake_high_lr_snake_film_24khz_v44/scheduler.pt', weights_only=False).state_dict())
+    #optimizer.load_state_dict(torch.load('/mike_migrate2/checkpoints/2025_04_22/exp_poc_DAC_v50/optimizer.pt', weights_only=False).state_dict())
 
 
 

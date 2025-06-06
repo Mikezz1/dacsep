@@ -1,5 +1,9 @@
 .DS*
 *.wav
+test_results
+*egg-info
+*.md
+# scripts/*
 *.ipynb
 # Byte-compiled / optimized / DLL files
 __pycache__/

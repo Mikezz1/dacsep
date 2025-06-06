@@ -1,29 +1,40 @@
-exp_name: exp_poc_DAC_pseudoSDR_snake_high_lr_snake_v5 #exp_poc_latent_mask_tanh_v1
+exp_name: exp_poc_DAC_v51_ft_emb 
 overfit: false
 
+dynamic_mixing: False
 
-num_epochs: 400
-warmup_steps: 2000
+num_epochs: 100 #350 #80 # 350
+warmup_steps: 4000 #1000 #4000 #2000 #4000 # 6000
 num_codebooks: 8
+
+sample_rate: 24000
 
 # add_si_sdr_loss: true
 # add_si_sdr_loss_every_codebook: true
-add_latent_loss: false
+add_mel_loss: true
+add_l1_latent_loss: true
+
+weight_sdr: 0.6
+weight_mel: 3
+weight_latent: 1
+weight_speaker: 0.0
 
 after_quant: false # for use_descript: true always false
 use_descript: true
+twin_tower: true
+film: true 
 
-variable_len_ref: false
-variable_len_train: false
+variable_len_ref: true
+variable_len_train: true
 
-lr: 5.0e-4
+lr: 6.0e-4 #6.0e-4 #4.0e-4 # 1e-4
 weight_decay: 0.00001
 
 
 train:
-  cut_len: 48000 #144000
-  batch_size: 64 #96
+  cut_len: 96000 #192000 #192000 #192000 #144000 #96000 #32000 #48000 #48000 #144000 #96000 #144000
+  batch_size: 32 #32 #96
 
 val:  
-  cut_len: 48000 #144000
+  cut_len: 48000 #48000 #48000 #144000
   batch_size: 192

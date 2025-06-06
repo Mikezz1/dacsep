@@ -1,11 +1,11 @@
 # Target Speaker Extraction with Neural Audio Codecs
 
 ```
-pip install --target /mike_migrate2/packages2 --upgrade  -r requirements.txt
+pip install --target /mike_migrate2/packages4 --upgrade  -r requirements.txt
 ```
 
 ```
-export PYTHONPATH="/mike_migrate2/packages2:$PYTHONPATH"
+export PYTHONPATH="/mike_migrate2/packages4:$PYTHONPATH"
 ```
 
 ```
@@ -23,10 +23,10 @@ rsync \
 ```
 
 ```
- /ml_core_binaries/devbox-agent proc spawn -- python train.py
+/ml_core_binaries/devbox-agent proc spawn -- python train.py
 ```
 
 
 ```
-python /mike_migrate2/packages/tensorboard/main.py --logdir <your_log_dir>
+python /mike_migrate2/packages4/tensorboard/main.py --logdir <your_log_dir>
 ```
