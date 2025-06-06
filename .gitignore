@@ -2,7 +2,7 @@
 *.wav
 test_results
 *egg-info
-*.md
+doc.md
 # scripts/*
 *.ipynb
 # Byte-compiled / optimized / DLL files

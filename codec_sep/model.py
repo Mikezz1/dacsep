@@ -3,14 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import torch
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-import torch.nn as nn
-
-
 from rotary_embedding_torch import RotaryEmbedding
 
 
@@ -392,14 +384,14 @@ class TransformerEncoderLatent(nn.Module):
         x = self.quantizer.decoder(x).squeeze()
         return x
 
-    # @torch.compile()
+    @torch.compile()
     def descript_encode(self, x):
         x = self.quantizer.preprocess(x, self.sample_rate)
         # z, codes, latents, _, _ = self.quantizer.encode(x, n_quantizers=None)
         z = self.quantizer.encoder(x)
         return z
 
-    # @torch.compile()
+    @torch.compile()
     def descript_decode(self, x):
         x, codes_hat, latents_hat, commitment_loss_hat, codebook_loss_hat = (
             self.quantizer.quantizer(x, None)
@@ -407,7 +399,7 @@ class TransformerEncoderLatent(nn.Module):
         x = self.quantizer.decoder(x).squeeze()
         return x  # self.quantizer.decode(x).squeeze()
 
-    # @torch.compile()
+    @torch.compile()
     def forward(
         self,
         mix,
